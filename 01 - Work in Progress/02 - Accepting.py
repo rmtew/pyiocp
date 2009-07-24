@@ -265,25 +265,6 @@ if ret == FALSE:
     WSACleanup()
     raise WinError(err)
 
-"""
-int WSASend(
-  __in   SOCKET s,
-  __in   LPWSABUF lpBuffers,
-  __in   DWORD dwBufferCount,
-  __out  LPDWORD lpNumberOfBytesSent,
-  __in   DWORD dwFlags,
-  __in   LPWSAOVERLAPPED lpOverlapped,
-  __in   LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
-);
-"""
-
-"""
-struct __WSABUF {
-  u_long   len;
-  char FAR *buf;
-}
-"""
-
 class WSABUF(Structure):
     _fields_ = [
         ("len",         c_ulong),
