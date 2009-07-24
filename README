@@ -1,0 +1,11 @@
+pyiocp
+------
+
+This project is intended to illustrate the use of IO completion ports in
+Python using ctypes.  It is licensed under version 3 of the GPL, a copy
+of which you can find included with this project under the filename 'LICENSE'.
+
+  01 - Work in Progress
+  
+    This folder contains a series of scripts which implement an increasingly
+    extensive usage of IOCP using ctypes.
