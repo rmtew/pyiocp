@@ -328,4 +328,5 @@ try:
     while 1:
         Loop()
 except KeyboardInterrupt:
+    print "*** Keyboard interrupt."
     Cleanup()
