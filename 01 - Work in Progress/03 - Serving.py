@@ -296,6 +296,7 @@ def Cleanup():
 WAIT_TIMEOUT = 258
 
 def Loop():
+    # Store the accept socket as a global so that Cleanup can close it.
     global acceptSocket
     acceptKey, acceptSocket, ovAccept = CreateAcceptSocket()
 
