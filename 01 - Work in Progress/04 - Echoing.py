@@ -357,21 +357,6 @@ def StartOverlappedWrite(_socket, msg):
 
     return STATE_WRITING, _socket, ovSend
 
-"""
-BOOL WSAAPI WSAGetOverlappedResult(
-  __in   SOCKET s,
-  __in   LPWSAOVERLAPPED lpOverlapped,
-  __out  LPDWORD lpcbTransfer,
-  __in   BOOL fWait,
-  __out  LPDWORD lpdwFlags
-);
-"""
-
-WSAGetOverlappedResult = windll.Ws2_32.WSAGetOverlappedResult
-WSAGetOverlappedResult.argtypes = (SOCKET, POINTER(OVERLAPPED), POINTER(DWORD), BOOL, POINTER(DWORD))
-WSAGetOverlappedResult.restype = BOOL
-
-ERROR_INVALID_HANDLE = 6
 
 def Pump():
     numberOfBytes = DWORD()
