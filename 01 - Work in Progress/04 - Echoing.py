@@ -384,13 +384,8 @@ def Pump():
             err = WSAGetLastError()
             if err == WAIT_TIMEOUT:
                 continue
-            elif err == ERROR_INVALID_HANDLE:
-                print "INVALID HANDLE", completionKey, ovCompletedPtr
-                Cleanup()
-                raise WinError(err)
-            else:
-                Cleanup()
-                raise WinError(err)
+            Cleanup()
+            raise WinError(err)
         break
 
     if completionKey.value == LISTEN_COMPLETION_KEY:
@@ -413,20 +408,12 @@ def Pump():
             # We'll use the completion of the read to do the corresponding write.
             _socket, recvBuffer, ovRecv = stateData[1:]
 
-            recvdBytes = DWORD()
-            flags = DWORD(0)
-            ret = WSAGetOverlappedResult(_socket, byref(ovRecv), byref(recvdBytes), FALSE, byref(flags))
-            if ret == FALSE:
-                err = WSAGetLastError()
-                Cleanup()
-                raise WinError(err)                
-
             # No received bytes indicates the connection has disconnected.
-            if recvdBytes.value == 0:
+            if numberOfBytes.value == 0:
                 print "DISCONNECTION;", len(stateByKey), "SOCKETS REGISTERED"
                 return True
             
-            msg = "["+ stateData[2][0].buf[:recvdBytes.value] +"]"
+            msg = "["+ stateData[2][0].buf[:numberOfBytes.value] +"]"
             stateByKey[completionKey.value] = StartOverlappedWrite(stateData[1], msg)
         else:
             Cleanup()
