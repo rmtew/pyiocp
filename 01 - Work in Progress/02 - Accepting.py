@@ -79,7 +79,7 @@ listenSocket = ret
 
 # Create an IO completion port.
 CreateIoCompletionPort = windll.kernel32.CreateIoCompletionPort
-CreateIoCompletionPort.argtypes = (HANDLE, HANDLE, POINTER(c_ulong), DWORD)
+CreateIoCompletionPort.argtypes = (HANDLE, HANDLE, c_ulong, DWORD)
 CreateIoCompletionPort.restype = HANDLE
 
 CloseHandle = windll.kernel32.CloseHandle

@@ -79,7 +79,7 @@ listenSocket = ret
 
 # Create an IO completion port.
 CreateIoCompletionPort = windll.kernel32.CreateIoCompletionPort
-CreateIoCompletionPort.argtypes = (HANDLE, HANDLE, POINTER(c_ulong), DWORD)
+CreateIoCompletionPort.argtypes = (HANDLE, HANDLE, c_ulong, DWORD)
 CreateIoCompletionPort.restype = HANDLE
 
 CloseHandle = windll.kernel32.CloseHandle
@@ -100,7 +100,8 @@ if hIOCP == 0:
     raise WinError(err)
 
 # Bind the listen socket to the IO completion port.
-CreateIoCompletionPort(listenSocket, hIOCP, NULL, NULL)
+LISTEN_COMPLETION_KEY = 90L
+CreateIoCompletionPort(listenSocket, hIOCP, LISTEN_COMPLETION_KEY, NULL)
 
 class _UN_b(Structure):
     _fields_ = [
@@ -239,11 +240,11 @@ dwLocalAddressLength = sizeof(sockaddr_in) + 16
 dwRemoteAddressLength = sizeof(sockaddr_in) + 16
 outputBuffer = create_string_buffer(dwReceiveDataLength + dwLocalAddressLength + dwRemoteAddressLength)
 
-currentCompletionKey = 100
+currentCompletionKey = 100L
 def CreateCompletionKey():
     global currentCompletionKey
     v = currentCompletionKey
-    currentCompletionKey += 1
+    currentCompletionKey += 1L
     return v
 
 overlappedByKey = {}
@@ -261,10 +262,9 @@ def CreateAcceptSocket():
     ovKey = CreateCompletionKey()
 
     dwBytesReceived = DWORD()
-    ovAccept = OVERLAPPED()
-    ovAccept.channel = ovKey
+    _ovAccept = OVERLAPPED()
 
-    ret = AcceptEx(listenSocket, _acceptSocket, outputBuffer, dwReceiveDataLength, dwLocalAddressLength, dwRemoteAddressLength, byref(dwBytesReceived), byref(ovAccept))
+    ret = AcceptEx(listenSocket, _acceptSocket, outputBuffer, dwReceiveDataLength, dwLocalAddressLength, dwRemoteAddressLength, byref(dwBytesReceived), byref(_ovAccept))
     if ret == FALSE:
         err = WSAGetLastError()
         # The operation was successful and is currently in progress.  Ignore this error...
@@ -276,8 +276,8 @@ def CreateAcceptSocket():
             raise WinError(err)
 
     # Bind the accept socket to the IO completion port.
-    CreateIoCompletionPort(_acceptSocket, hIOCP, c_ulong(ovKey), NULL)
-    return ovKey, _acceptSocket
+    CreateIoCompletionPort(_acceptSocket, hIOCP, ovKey, NULL)
+    return ovKey, _acceptSocket, _ovAccept
 
 GetQueuedCompletionStatus = windll.kernel32.GetQueuedCompletionStatus
 GetQueuedCompletionStatus.argtypes = (HANDLE, POINTER(DWORD), POINTER(c_ulong), POINTER(POINTER(OVERLAPPED)), DWORD)
@@ -297,7 +297,7 @@ WAIT_TIMEOUT = 258
 
 def Loop():
     global acceptSocket
-    acceptKey, acceptSocket = CreateAcceptSocket()
+    acceptKey, acceptSocket, ovAccept = CreateAcceptSocket()
 
     numberOfBytes = DWORD()
     completionKey = c_ulong()
@@ -316,9 +316,9 @@ def Loop():
             raise WinError(err)
         break
 
-    if ovCompletedPtr.contents.channel != acceptKey:
+    if completionKey.value != LISTEN_COMPLETION_KEY:
         Cleanup()
-        raise Exception("Unexpected completion key", ovCompletedPtr.contents.channel, "expected", acceptKey)
+        raise Exception("Unexpected completion key", completionKey, "expected", LISTEN_COMPLETION_KEY)
 
     print "STORING SOCKET", acceptSocket,"FOR KEY", acceptKey
     # Hand off the connection as an accepted socket.
