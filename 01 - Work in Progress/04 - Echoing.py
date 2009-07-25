@@ -247,8 +247,6 @@ def CreateCompletionKey():
     currentCompletionKey += 1L
     return v
 
-overlappedByKey = {}
-
 def CreateAcceptSocket():
     ret = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, None, 0, WSA_FLAG_OVERLAPPED)
     if ret == INVALID_SOCKET:
@@ -283,51 +281,164 @@ GetQueuedCompletionStatus = windll.kernel32.GetQueuedCompletionStatus
 GetQueuedCompletionStatus.argtypes = (HANDLE, POINTER(DWORD), POINTER(c_ulong), POINTER(POINTER(OVERLAPPED)), DWORD)
 GetQueuedCompletionStatus.restype = BOOL
 
-INFINITE = -1
-
 def Cleanup():
-    for connectedSocket in overlappedByKey.itervalues():
-        closesocket(connectedSocket)
-    closesocket(acceptSocket)
+    for stateData in stateByKey.itervalues():
+        closesocket(stateData[1])
     closesocket(listenSocket)
     CloseHandle(hIOCP)
     WSACleanup()
 
 WAIT_TIMEOUT = 258
 
-def Loop():
-    # Store the accept socket as a global so that Cleanup can close it.
-    global acceptSocket
-    acceptKey, acceptSocket, ovAccept = CreateAcceptSocket()
+stateByKey = {}
 
+STATE_WRITING = 1
+STATE_READING = 2
+
+"""
+int WSARecv(
+  __in     SOCKET s,
+  __inout  LPWSABUF lpBuffers,
+  __in     DWORD dwBufferCount,
+  __out    LPDWORD lpNumberOfBytesRecvd,
+  __inout  LPDWORD lpFlags,
+  __in     LPWSAOVERLAPPED lpOverlapped,
+  __in     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+);
+"""
+
+class WSABUF(Structure):
+    _fields_ = [
+        ("len",         c_ulong),
+        ("buf",         c_char_p),
+    ]
+
+WSARecv = windll.Ws2_32.WSARecv
+WSARecv.argtypes = (SOCKET, POINTER(WSABUF), DWORD, POINTER(DWORD), POINTER(DWORD), POINTER(OVERLAPPED), c_void_p)
+WSARecv.restype = c_int
+
+def StartOverlappedRead(_socket):
+    recvBuffer = (WSABUF * 1)()
+    recvBuffer[0].buf = ' ' * 4096
+    recvBuffer[0].len = 4096
+    ovRecv = OVERLAPPED()
+
+    numberOfBytesRecvd = DWORD()
+    flags = DWORD()
+    ret = WSARecv(_socket, cast(recvBuffer, POINTER(WSABUF)), 1, byref(numberOfBytesRecvd), byref(flags), byref(ovRecv), 0)
+    if ret != 0:
+        err = WSAGetLastError()
+        # The operation was successful and is currently in progress.  Ignore this error...
+        if err != ERROR_IO_PENDING:
+            Cleanup()
+            raise WinError(err)    
+
+    return STATE_READING, _socket, recvBuffer, ovRecv
+
+WSASend = windll.Ws2_32.WSASend
+WSASend.argtypes = (SOCKET, POINTER(WSABUF), DWORD, POINTER(DWORD), DWORD, POINTER(OVERLAPPED), c_void_p)
+WSASend.restype = c_int
+
+def StartOverlappedWrite(_socket, msg):
+    sendBuffer = (WSABUF * 1)()
+    sendBuffer[0].buf = msg
+    sendBuffer[0].len = len(msg)
+
+    bytesSent = DWORD()
+    ovSend = OVERLAPPED()
+
+    ret = WSASend(_socket, cast(sendBuffer, POINTER(WSABUF)), 1, byref(bytesSent), 0, byref(ovSend), 0)
+    if ret != 0:
+        err = WSAGetLastError()
+        # The operation was successful and is currently in progress.  Ignore this error...
+        if err != ERROR_IO_PENDING:
+            Cleanup()
+            raise WinError(err)    
+
+    return STATE_WRITING, _socket, ovSend
+
+"""
+BOOL WSAAPI WSAGetOverlappedResult(
+  __in   SOCKET s,
+  __in   LPWSAOVERLAPPED lpOverlapped,
+  __out  LPDWORD lpcbTransfer,
+  __in   BOOL fWait,
+  __out  LPDWORD lpdwFlags
+);
+"""
+
+WSAGetOverlappedResult = windll.Ws2_32.WSAGetOverlappedResult
+WSAGetOverlappedResult.argtypes = (SOCKET, POINTER(OVERLAPPED), POINTER(DWORD), BOOL, POINTER(DWORD))
+WSAGetOverlappedResult.restype = BOOL
+
+ERROR_INVALID_HANDLE = 6
+
+def Pump():
     numberOfBytes = DWORD()
     completionKey = c_ulong()
     ovCompletedPtr = POINTER(OVERLAPPED)()
 
-    # Periodically poll for completed packets.  If we poll infinitely, we block signals from reaching Python.
-    print "WAITING FOR CONNECTION", acceptKey
-    #ret = GetQueuedCompletionStatus(hIOCP, byref(numberOfBytes), byref(completionKey), byref(ovCompletedPtr), INFINITE)
-    while 1:
+    while True:
         ret = GetQueuedCompletionStatus(hIOCP, byref(numberOfBytes), byref(completionKey), byref(ovCompletedPtr), 500)
         if ret == FALSE:
             err = WSAGetLastError()
             if err == WAIT_TIMEOUT:
                 continue
-            Cleanup()
-            raise WinError(err)
+            elif err == ERROR_INVALID_HANDLE:
+                print "INVALID HANDLE", completionKey, ovCompletedPtr
+                Cleanup()
+                raise WinError(err)
+            else:
+                Cleanup()
+                raise WinError(err)
         break
 
-    if completionKey.value != LISTEN_COMPLETION_KEY:
-        Cleanup()
-        raise Exception("Unexpected completion key", completionKey, "expected", LISTEN_COMPLETION_KEY)
+    if completionKey.value == LISTEN_COMPLETION_KEY:
+        acceptKey, acceptSocket, ignore = stateByKey[LISTEN_COMPLETION_KEY]
+        stateByKey[LISTEN_COMPLETION_KEY] = CreateAcceptSocket()
 
-    print "STORING SOCKET", acceptSocket,"FOR KEY", acceptKey
-    # Hand off the connection as an accepted socket.
-    overlappedByKey[acceptKey] = acceptSocket
+        # Do an initial read event on the newly connected socket.
+        stateByKey[acceptKey] = StartOverlappedRead(acceptSocket)
 
+        print "CONNECTION;", len(stateByKey), "SOCKETS REGISTERED"
+    else:
+        stateData = stateByKey[completionKey.value]
+        del stateByKey[completionKey.value]
+
+        state = stateData[0]
+        if state == STATE_WRITING:
+            # We'll use the completion of the write to start the next read.
+            stateByKey[completionKey.value] = StartOverlappedRead(stateData[1])
+        elif state == STATE_READING:
+            # We'll use the completion of the read to do the corresponding write.
+            _socket, recvBuffer, ovRecv = stateData[1:]
+
+            recvdBytes = DWORD()
+            flags = DWORD(0)
+            ret = WSAGetOverlappedResult(_socket, byref(ovRecv), byref(recvdBytes), FALSE, byref(flags))
+            if ret == FALSE:
+                err = WSAGetLastError()
+                Cleanup()
+                raise WinError(err)                
+
+            # No received bytes indicates the connection has disconnected.
+            if recvdBytes.value == 0:
+                print "DISCONNECTION;", len(stateByKey), "SOCKETS REGISTERED"
+                return True
+            
+            msg = "["+ stateData[2][0].buf[:recvdBytes.value] +"]"
+            stateByKey[completionKey.value] = StartOverlappedWrite(stateData[1], msg)
+        else:
+            Cleanup()
+            raise Exception("Unexpected completion key", completionKey, "state", state)
+
+    return True
+
+stateByKey[LISTEN_COMPLETION_KEY] = CreateAcceptSocket()
 try:
-    while 1:
-        Loop()
+    while Pump():
+        pass        
+    print "*** Unexpected exit."
 except KeyboardInterrupt:
     print "*** Keyboard interrupt."
     Cleanup()
