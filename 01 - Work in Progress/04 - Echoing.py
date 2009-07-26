@@ -295,18 +295,6 @@ stateByKey = {}
 STATE_WRITING = 1
 STATE_READING = 2
 
-"""
-int WSARecv(
-  __in     SOCKET s,
-  __inout  LPWSABUF lpBuffers,
-  __in     DWORD dwBufferCount,
-  __out    LPDWORD lpNumberOfBytesRecvd,
-  __inout  LPDWORD lpFlags,
-  __in     LPWSAOVERLAPPED lpOverlapped,
-  __in     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
-);
-"""
-
 class WSABUF(Structure):
     _fields_ = [
         ("len",         c_ulong),
