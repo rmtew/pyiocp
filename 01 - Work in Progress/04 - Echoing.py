@@ -398,8 +398,8 @@ def Pump():
                 print "DISCONNECTION;", len(stateByKey), "SOCKETS REGISTERED"
                 return True
             
-            msg = "["+ stateData[2][0].buf[:numberOfBytes.value] +"]"
-            stateByKey[completionKey.value] = StartOverlappedWrite(stateData[1], msg)
+            msg = "["+ recvBuffer[0].buf[:numberOfBytes.value] +"]"
+            stateByKey[completionKey.value] = StartOverlappedWrite(_socket, msg)
         else:
             Cleanup()
             raise Exception("Unexpected completion key", completionKey, "state", state)
