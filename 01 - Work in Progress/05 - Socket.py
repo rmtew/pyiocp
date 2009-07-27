@@ -59,23 +59,11 @@ closesocket.restype = c_int
 def MAKEWORD(bLow, bHigh):
     return (bHigh << 8) + bLow
 
-wsaData = WSADATA()
-ret = WSAStartup(MAKEWORD(2, 2), LP_WSADATA(wsaData))
-if ret != 0:
-    raise WinError(ret)
-
 AF_INET = 2
 SOCK_STREAM = 1
 IPPROTO_TCP = 6
 WSA_FLAG_OVERLAPPED = 0x01
 INVALID_SOCKET = ~0
-
-ret = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, None, 0, WSA_FLAG_OVERLAPPED)
-if ret == INVALID_SOCKET:
-    WSACleanup()
-    raise WinError()
-
-listenSocket = ret
 
 # Create an IO completion port.
 CreateIoCompletionPort = windll.kernel32.CreateIoCompletionPort
@@ -92,17 +80,6 @@ NULL = c_ulong()
 INVALID_HANDLE_VALUE = HANDLE(-1)
 NULL_HANDLE = HANDLE(0)
 
-hIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL_HANDLE, NULL, NULL)
-if hIOCP == 0:
-    err = WSAGetLastError()
-    closesocket(listenSocket)
-    WSACleanup()
-    raise WinError(err)
-
-# Bind the listen socket to the IO completion port.
-LISTEN_COMPLETION_KEY = 90L
-CreateIoCompletionPort(listenSocket, hIOCP, LISTEN_COMPLETION_KEY, NULL)
-
 class _UN_b(Structure):
     _fields_ = [
         ("s_b1",            c_ubyte),
@@ -117,18 +94,12 @@ class _UN_w(Structure):
         ("s_w2",            c_ushort),
     ]
 
-class _UN(Structure):
+class in_addr(Union):
     _fields_ = [
         ("s_un_b",          _UN_b),
         ("s_un_w",          _UN_w),
         ("s_addr",          c_ulong),
     ]
-
-class in_addr(Union):
-    _fields_ = [
-        ("s_un",            _UN),
-    ]
-    _anonymous_ = ("s_un",)
 
 class sockaddr_in(Structure):
     _fields_ = [
@@ -137,8 +108,17 @@ class sockaddr_in(Structure):
         ("sin_addr",        in_addr),
         ("szDescription",   c_char * 8),
     ]
+    _anonymous_ = ("sin_addr",)
 
 sockaddr_inp = POINTER(sockaddr_in)
+
+class sockaddr(Structure):
+    _fields_ = [
+        ("sa_family",       c_short),
+        ("sa_data",         c_char * 14),
+    ]
+
+sockaddrp = POINTER(sockaddr)
 
 bind = windll.Ws2_32.bind
 bind.argtypes = (SOCKET, sockaddr_inp, c_int)
@@ -167,42 +147,15 @@ inet_ntoa = windll.Ws2_32.inet_ntoa
 inet_ntoa.argtypes = (in_addr,)
 inet_ntoa.restype = c_char_p
 
+ntohs = windll.Ws2_32.ntohs
+ntohs.argtypes = (c_ushort,)
+ntohs.restype = c_ushort
+
 htons = windll.Ws2_32.htons
 htons.argtypes = (c_ushort,)
 htons.restype = c_ushort
 
-hostdata = gethostbyname("")
-#ip = inet_ntoa(cast(hostdata.contents.h_addr_list, POINTER(in_addr)).contents)
-
-port = 10101
-ip = "127.0.0.1"
-
-sa = sockaddr_in()
-sa.sin_family = AF_INET
-sa.sin_addr.S_addr = inet_addr(ip)
-sa.sin_port = htons(port)
-
 SOCKET_ERROR = -1
-
-ret = bind(listenSocket, sockaddr_inp(sa), sizeof(sa))
-if ret == SOCKET_ERROR:
-    closesocket(listenSocket)
-    CloseHandle(hIOCP)
-    WSACleanup()
-    raise WinError()
-
-listen = windll.Ws2_32.listen
-listen.argtypes = (SOCKET, c_int)
-listen.restype = BOOL
-
-SOMAXCONN = 255
-
-ret = listen(listenSocket, SOMAXCONN)
-if ret != 0:
-    closesocket(listenSocket)
-    CloseHandle(hIOCP)
-    WSACleanup()
-    raise WinError()
 
 class _US(Structure):
     _fields_ = [
@@ -235,62 +188,11 @@ AcceptEx.restype = BOOL
 FALSE = 0
 ERROR_IO_PENDING = 997
 
-dwReceiveDataLength = 0
-dwLocalAddressLength = sizeof(sockaddr_in) + 16
-dwRemoteAddressLength = sizeof(sockaddr_in) + 16
-outputBuffer = create_string_buffer(dwReceiveDataLength + dwLocalAddressLength + dwRemoteAddressLength)
-
-currentCompletionKey = 100L
-def CreateCompletionKey():
-    global currentCompletionKey
-    v = currentCompletionKey
-    currentCompletionKey += 1L
-    return v
-
-def CreateAcceptSocket():
-    ret = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, None, 0, WSA_FLAG_OVERLAPPED)
-    if ret == INVALID_SOCKET:
-        err = WSAGetLastError()
-        closesocket(listenSocket)
-        CloseHandle(hIOCP)
-        WSACleanup()
-        raise WinError(err)
-
-    _acceptSocket = ret
-    ovKey = CreateCompletionKey()
-
-    dwBytesReceived = DWORD()
-    _ovAccept = OVERLAPPED()
-
-    ret = AcceptEx(listenSocket, _acceptSocket, outputBuffer, dwReceiveDataLength, dwLocalAddressLength, dwRemoteAddressLength, byref(dwBytesReceived), byref(_ovAccept))
-    if ret == FALSE:
-        err = WSAGetLastError()
-        # The operation was successful and is currently in progress.  Ignore this error...
-        if err != ERROR_IO_PENDING:
-            closesocket(_acceptSocket)
-            closesocket(listenSocket)
-            CloseHandle(hIOCP)
-            WSACleanup()
-            raise WinError(err)
-
-    # Bind the accept socket to the IO completion port.
-    CreateIoCompletionPort(_acceptSocket, hIOCP, ovKey, NULL)
-    return ovKey, _acceptSocket, _ovAccept
-
 GetQueuedCompletionStatus = windll.kernel32.GetQueuedCompletionStatus
 GetQueuedCompletionStatus.argtypes = (HANDLE, POINTER(DWORD), POINTER(c_ulong), POINTER(POINTER(OVERLAPPED)), DWORD)
 GetQueuedCompletionStatus.restype = BOOL
 
-def Cleanup():
-    for stateData in stateByKey.itervalues():
-        closesocket(stateData[1])
-    closesocket(listenSocket)
-    CloseHandle(hIOCP)
-    WSACleanup()
-
 WAIT_TIMEOUT = 258
-
-stateByKey = {}
 
 STATE_WRITING = 1
 STATE_READING = 2
@@ -305,100 +207,330 @@ WSARecv = windll.Ws2_32.WSARecv
 WSARecv.argtypes = (SOCKET, POINTER(WSABUF), DWORD, POINTER(DWORD), POINTER(DWORD), POINTER(OVERLAPPED), c_void_p)
 WSARecv.restype = c_int
 
-def StartOverlappedRead(_socket):
-    recvBuffer = (WSABUF * 1)()
-    recvBuffer[0].buf = ' ' * 4096
-    recvBuffer[0].len = 4096
-    ovRecv = OVERLAPPED()
-
-    numberOfBytesRecvd = DWORD()
-    flags = DWORD()
-    ret = WSARecv(_socket, cast(recvBuffer, POINTER(WSABUF)), 1, byref(numberOfBytesRecvd), byref(flags), byref(ovRecv), 0)
-    if ret != 0:
-        err = WSAGetLastError()
-        # The operation was successful and is currently in progress.  Ignore this error...
-        if err != ERROR_IO_PENDING:
-            Cleanup()
-            raise WinError(err)    
-
-    return STATE_READING, _socket, recvBuffer, ovRecv
-
 WSASend = windll.Ws2_32.WSASend
 WSASend.argtypes = (SOCKET, POINTER(WSABUF), DWORD, POINTER(DWORD), DWORD, POINTER(OVERLAPPED), c_void_p)
 WSASend.restype = c_int
 
-def StartOverlappedWrite(_socket, msg):
-    sendBuffer = (WSABUF * 1)()
-    sendBuffer[0].buf = msg
-    sendBuffer[0].len = len(msg)
+import stackless
+import weakref
+import socket as stdsocket # We need the "socket" name for the function we export.
 
-    bytesSent = DWORD()
-    ovSend = OVERLAPPED()
+wsaData = WSADATA()
+ret = WSAStartup(MAKEWORD(2, 2), LP_WSADATA(wsaData))
+if ret != 0:
+    raise WinError(ret)
 
-    ret = WSASend(_socket, cast(sendBuffer, POINTER(WSABUF)), 1, byref(bytesSent), 0, byref(ovSend), 0)
-    if ret != 0:
-        err = WSAGetLastError()
-        # The operation was successful and is currently in progress.  Ignore this error...
-        if err != ERROR_IO_PENDING:
-            Cleanup()
-            raise WinError(err)    
-
-    return STATE_WRITING, _socket, ovSend
+hIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL_HANDLE, NULL, NULL)
+if hIOCP == 0:
+    WSACleanup()
+    raise WinError()
 
 
-def Pump():
+CancelIo = windll.kernel32.CancelIo
+CancelIo.argtypes = (HANDLE,)
+CancelIo.restype = BOOL
+
+managerRunning = False
+
+def ManageSockets():
+    global managerRunning
+
+    try:
+        _DispatchIOCP()
+    except KeyboardInterrupt:
+        _CleanupActiveIO()
+        raise
+
+    managerRunning = False
+
+def StartManager():
+    global managerRunning
+    if not managerRunning:
+        managerRunning = True
+        stackless.tasklet(ManageSockets)()
+
+_manage_sockets_func = StartManager
+
+def stacklesssocket_manager(mgr):
+    global _manage_sockets_func
+    _manage_sockets_func = mgr
+
+READ_BUFFER_SIZE = 64 * 1024
+
+"""
+void GetAcceptExSockaddrs(
+  __in   PVOID lpOutputBuffer,
+  __in   DWORD dwReceiveDataLength,
+  __in   DWORD dwLocalAddressLength,
+  __in   DWORD dwRemoteAddressLength,
+  __out  LPSOCKADDR *LocalSockaddr,
+  __out  LPINT LocalSockaddrLength,
+  __out  LPSOCKADDR *RemoteSockaddr,
+  __out  LPINT RemoteSockaddrLength
+);
+"""
+
+listen = windll.Ws2_32.listen
+listen.argtypes = (SOCKET, c_int)
+listen.restype = BOOL
+
+GetAcceptExSockaddrs = windll.Mswsock.GetAcceptExSockaddrs
+GetAcceptExSockaddrs.argtypes = (c_void_p, DWORD, DWORD, DWORD, POINTER(sockaddr_in), POINTER(c_int), POINTER(sockaddr_in), POINTER(c_int))
+GetAcceptExSockaddrs.restype = c_int
+
+setsockopt = windll.Ws2_32.setsockopt
+setsockopt.argtypes = (SOCKET, c_int, c_int, c_char_p, c_int)
+setsockopt.restype = c_int
+
+"""
+int WSAAPI getnameinfo(
+  __in   const struct sockaddr FAR *sa,
+  __in   socklen_t salen,
+  __out  char FAR *host,
+  __in   DWORD hostlen,
+  __out  char FAR *serv,
+  __in   DWORD servlen,
+  __in   int flags
+);
+"""
+
+socklen_t = c_int
+
+getnameinfo = windll.Ws2_32.getnameinfo
+getnameinfo.argtypes = (POINTER(sockaddr), socklen_t, c_char_p, DWORD, c_char_p, DWORD, c_int)
+getnameinfo.restype = c_int
+
+NI_MAXHOST = 1025
+NI_NUMERICHOST = 0x02
+
+class socket:
+    def __init__(self, family=AF_INET, type=SOCK_STREAM, proto=IPPROTO_TCP):    
+        ret = WSASocket(family, type, proto, None, 0, WSA_FLAG_OVERLAPPED)
+        if ret == INVALID_SOCKET:
+            raise WinError()
+
+        self._family = family
+        self._type = type
+        self._proto = proto
+        self._timeout = 0
+
+        # Bind the socket to the shared IO completion port.
+        CreateIoCompletionPort(ret, hIOCP, NULL, NULL)
+
+        self._socket = ret
+
+        self.recvBuffer = None
+        self.sendBuffer = (WSABUF * 1)()
+
+    def fileno(self):
+        return self._socket
+
+    def getfamily(self):
+        return self._family
+
+    def gettype(self):
+        return self._type
+
+    def getproto(self):
+        return self._proto
+
+    def gettimeout(self):
+        return self._timeout
+
+    family = property(getfamily, doc="the socket family")
+    type = property(gettype, doc="the socket type")
+    proto = property(getproto, doc="the socket protocol")
+    timeout = property(gettimeout, doc="the socket timeout")
+
+    def setsockopt(self, level, optname, value):
+        if type(value) is str:
+            bufp = c_char_p(value)
+            buflen = len(value)
+        else:
+            buf = c_int(value)
+            bufp = cast(byref(buf), c_char_p)
+            buflen = sizeof(c_int)
+
+        ret = setsockopt(self._socket, level, optname, bufp, buflen);
+        if ret == SOCKET_ERROR:
+            raise WinError()
+
+    def bind(self, address):
+        host, port = address
+
+        sa = sockaddr_in()
+        sa.sin_family = AF_INET
+        sa.sin_addr.S_addr = inet_addr(host)
+        sa.sin_port = htons(port)
+
+        ret = bind(self._socket, sockaddr_inp(sa), sizeof(sa))
+        if ret == SOCKET_ERROR:
+            raise WinError()
+
+    def listen(self, backlog):
+        ret = listen(self._socket, backlog)
+        if ret != 0:
+            raise WinError()
+
+    def accept(self):
+        dwReceiveDataLength = 0
+        dwLocalAddressLength = sizeof(sockaddr_in) + 16
+        dwRemoteAddressLength = sizeof(sockaddr_in) + 16
+        outputBuffer = create_string_buffer(dwReceiveDataLength + dwLocalAddressLength + dwRemoteAddressLength)
+
+        dwBytesReceived = DWORD()
+        ovAccept = OVERLAPPED()
+        c = ovAccept.channel = stackless.channel()
+
+        acceptSocket = socket()
+
+        ret = AcceptEx(self._socket, acceptSocket._socket, outputBuffer, dwReceiveDataLength, dwLocalAddressLength, dwRemoteAddressLength, byref(dwBytesReceived), byref(ovAccept))
+        if ret == FALSE:
+            err = WSAGetLastError()
+            # The operation was successful and is currently in progress.  Ignore this error...
+            if err != ERROR_IO_PENDING:
+                closesocket(acceptSocket._socket)
+                raise WinError(err)
+
+        # Block until the overlapped operation completes.
+        activeIO[self._socket] = c
+        c.receive()
+
+        localSockaddr = sockaddr_in()
+        localSockaddrSize = c_int(sizeof(sockaddr_in))
+        remoteSockaddr = sockaddr_in()
+        remoteSockaddrSize = c_int(sizeof(sockaddr_in))
+
+        GetAcceptExSockaddrs(outputBuffer, dwReceiveDataLength, dwLocalAddressLength, dwRemoteAddressLength, byref(localSockaddr), byref(localSockaddrSize), byref(remoteSockaddr), byref(remoteSockaddrSize))
+
+        #hostbuf = create_string_buffer(NI_MAXHOST)
+        #servbuf = c_char_p()
+        #
+        #xxx = cast(byref(localSockaddr), sockaddrp)
+        #ret = getnameinfo(xxx, sizeof(sockaddr_in), hostbuf, sizeof(hostbuf), servbuf, 0, NI_NUMERICHOST)
+        #if ret != 0:
+        #    err = WSAGetLastError()
+        #    closesocket(acceptSocket._socket)
+        #    raise WinError(err)
+
+        host = inet_ntoa(localSockaddr.sin_addr)
+        port = ntohs(localSockaddr.sin_port)
+
+        return (acceptSocket, (host, port))
+
+    def recv(self, byteCount, flags=0):
+        if self.recvBuffer is None:
+            self.recvBuffer = (WSABUF * 1)()
+            self.recvBuffer[0].buf = ' ' * READ_BUFFER_SIZE
+            self.recvBuffer[0].len = READ_BUFFER_SIZE
+
+        # WARNING: For now, we cap the readable amount to size of the preallocated buffer.
+        byteCount = min(byteCount, READ_BUFFER_SIZE)
+    
+        numberOfBytesRecvd = DWORD()
+        flags = DWORD()
+        ovRecv = OVERLAPPED()
+        c = ovRecv.channel = stackless.channel()
+
+        ret = WSARecv(self._socket, cast(self.recvBuffer, POINTER(WSABUF)), 1, byref(numberOfBytesRecvd), byref(flags), byref(ovRecv), 0)
+        if ret != 0:
+            err = WSAGetLastError()
+            # The operation was successful and is currently in progress.  Ignore this error...
+            if err != ERROR_IO_PENDING:
+                raise WinError(err)    
+
+        # Block until the overlapped operation completes.
+        activeIO[self._socket] = c
+        numberOfBytes = c.receive()
+        return self.recvBuffer[0].buf[:numberOfBytes]
+
+    def send(self, data):
+        self.sendBuffer[0].buf = data
+        self.sendBuffer[0].len = len(data)
+
+        bytesSent = DWORD()
+        ovSend = OVERLAPPED()
+        c = ovSend.channel = stackless.channel()
+
+        ret = WSASend(self._socket, cast(self.sendBuffer, POINTER(WSABUF)), 1, byref(bytesSent), 0, byref(ovSend), 0)
+        if ret != 0:
+            err = WSAGetLastError()
+            # The operation was successful and is currently in progress.  Ignore this error...
+            if err != ERROR_IO_PENDING:
+                Cleanup()
+                raise WinError(err)    
+
+        # Return the number of bytes that were send.
+        activeIO[self._socket] = c
+        return c.receive()
+
+activeIO = weakref.WeakValueDictionary()
+
+def _DispatchIOCP():
     numberOfBytes = DWORD()
     completionKey = c_ulong()
     ovCompletedPtr = POINTER(OVERLAPPED)()
 
     while True:
-        ret = GetQueuedCompletionStatus(hIOCP, byref(numberOfBytes), byref(completionKey), byref(ovCompletedPtr), 500)
-        if ret == FALSE:
-            err = WSAGetLastError()
-            if err == WAIT_TIMEOUT:
+        while True:
+            # Yield to give other tasklets a chance to be scheduled.
+            stackless.schedule()
+
+            ret = GetQueuedCompletionStatus(hIOCP, byref(numberOfBytes), byref(completionKey), byref(ovCompletedPtr), 50)
+            if ret == FALSE:
+                err = WSAGetLastError()
+                if err == WAIT_TIMEOUT:
+                    continue
+
+                ovCompletedPtr.contents.channel.send_exception(WinError, err)
                 continue
-            Cleanup()
-            raise WinError(err)
-        break
 
-    if completionKey.value == LISTEN_COMPLETION_KEY:
-        acceptKey, acceptSocket, ignore = stateByKey[LISTEN_COMPLETION_KEY]
-        stateByKey[LISTEN_COMPLETION_KEY] = CreateAcceptSocket()
+            break
 
-        # Do an initial read event on the newly connected socket.
-        stateByKey[acceptKey] = StartOverlappedRead(acceptSocket)
+        # Handle the completed packet.
+        ovCompletedPtr.contents.channel.send(numberOfBytes.value)
 
-        print "CONNECTION;", len(stateByKey), "SOCKETS REGISTERED"
-    else:
-        stateData = stateByKey[completionKey.value]
-        del stateByKey[completionKey.value]
+def _CleanupActiveIO():
+    for k, v in activeIO.items():
+        ret = CancelIo(k)
+        if ret == 0:
+            raise WinError()
 
-        state = stateData[0]
-        if state == STATE_WRITING:
-            # We'll use the completion of the write to start the next read.
-            stateByKey[completionKey.value] = StartOverlappedRead(stateData[1])
-        elif state == STATE_READING:
-            # We'll use the completion of the read to do the corresponding write.
-            _socket, recvBuffer, ovRecv = stateData[1:]
+        # Any tasklets blocked on IO are killed silently.
+        v.send_exception(TaskletExit)
 
-            # No received bytes indicates the connection has disconnected.
-            if numberOfBytes.value == 0:
-                print "DISCONNECTION;", len(stateByKey), "SOCKETS REGISTERED"
-                return True
-            
-            msg = "["+ recvBuffer[0].buf[:numberOfBytes.value] +"]"
-            stateByKey[completionKey.value] = StartOverlappedWrite(_socket, msg)
-        else:
-            Cleanup()
-            raise Exception("Unexpected completion key", completionKey, "state", state)
+SOL_SOCKET = 0xffff
+SO_REUSEADDR = 0x0004
 
-    return True
+def Run():
+    address = ("127.0.0.1", 3000)
+    listenSocket = socket(AF_INET, SOCK_STREAM)
+    listenSocket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+    listenSocket.bind(address)
+    listenSocket.listen(5)
 
-stateByKey[LISTEN_COMPLETION_KEY] = CreateAcceptSocket()
-try:
-    while Pump():
-        pass        
-    print "*** Unexpected exit."
-except KeyboardInterrupt:
-    print "*** Keyboard interrupt."
-    Cleanup()
+    def handle_echo(_socket, _address):
+        while True:
+            data = currentSocket.recv(256)
+            if data == "":
+                print _address, "DISCONNECTED"
+                return
+
+            print _address, "READ", data, len(data)
+            dlen = currentSocket.send(data)
+            print _address, "ECHOD", dlen            
+
+    while True:
+        print "Waiting for new connection"
+        currentSocket, clientAddress = listenSocket.accept()
+        print "Connection", currentSocket.fileno(), "from", clientAddress
+        
+        stackless.tasklet(handle_echo)(currentSocket, clientAddress)
+
+if __name__ == "__main__":
+    StartManager()
+
+    print "STARTED"
+    stackless.tasklet(Run)()
+    stackless.run()
+    print "EXITED"
