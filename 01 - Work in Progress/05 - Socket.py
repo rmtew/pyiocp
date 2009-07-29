@@ -215,17 +215,6 @@ import stackless
 import weakref
 import socket as stdsocket # We need the "socket" name for the function we export.
 
-wsaData = WSADATA()
-ret = WSAStartup(MAKEWORD(2, 2), LP_WSADATA(wsaData))
-if ret != 0:
-    raise WinError(ret)
-
-hIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL_HANDLE, NULL, NULL)
-if hIOCP == 0:
-    WSACleanup()
-    raise WinError()
-
-
 CancelIo = windll.kernel32.CancelIo
 CancelIo.argtypes = (HANDLE,)
 CancelIo.restype = BOOL
@@ -233,13 +222,24 @@ CancelIo.restype = BOOL
 managerRunning = False
 
 def ManageSockets():
-    global managerRunning
+    global managerRunning, hIOCP
+
+    wsaData = WSADATA()
+    ret = WSAStartup(MAKEWORD(2, 2), LP_WSADATA(wsaData))
+    if ret != 0:
+        raise WinError(ret)
+
+    hIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL_HANDLE, NULL, NULL)
+    if hIOCP == 0:
+        WSACleanup()
+        raise WinError()
 
     try:
         _DispatchIOCP()
-    except KeyboardInterrupt:
+    finally:
         _CleanupActiveIO()
-        raise
+        CloseHandle(hIOCP)
+        WSACleanup()
 
     managerRunning = False
 
@@ -297,7 +297,7 @@ int WSAAPI getnameinfo(
 socklen_t = c_int
 
 getnameinfo = windll.Ws2_32.getnameinfo
-getnameinfo.argtypes = (POINTER(sockaddr), socklen_t, c_char_p, DWORD, c_char_p, DWORD, c_int)
+getnameinfo.argtypes = (POINTER(sockaddr_in), socklen_t, c_char_p, DWORD, c_char_p, DWORD, c_int)
 getnameinfo.restype = c_int
 
 NI_MAXHOST = 1025
@@ -360,7 +360,7 @@ class socket:
 
         sa = sockaddr_in()
         sa.sin_family = AF_INET
-        sa.sin_addr.S_addr = inet_addr(host)
+        sa.sin_addr.s_addr = inet_addr(host)
         sa.sin_port = htons(port)
 
         ret = bind(self._socket, sockaddr_inp(sa), sizeof(sa))
@@ -403,20 +403,21 @@ class socket:
 
         GetAcceptExSockaddrs(outputBuffer, dwReceiveDataLength, dwLocalAddressLength, dwRemoteAddressLength, byref(localSockaddr), byref(localSockaddrSize), byref(remoteSockaddr), byref(remoteSockaddrSize))
 
-        #hostbuf = create_string_buffer(NI_MAXHOST)
-        #servbuf = c_char_p()
-        #
-        #xxx = cast(byref(localSockaddr), sockaddrp)
-        #ret = getnameinfo(xxx, sizeof(sockaddr_in), hostbuf, sizeof(hostbuf), servbuf, 0, NI_NUMERICHOST)
-        #if ret != 0:
-        #    err = WSAGetLastError()
-        #    closesocket(acceptSocket._socket)
-        #    raise WinError(err)
+        hostbuf = create_string_buffer(NI_MAXHOST)
+        servbuf = c_char_p()
 
-        host = inet_ntoa(localSockaddr.sin_addr)
         port = ntohs(localSockaddr.sin_port)
 
-        return (acceptSocket, (host, port))
+        localSockaddr.sin_family = AF_INET
+        ret = getnameinfo(localSockaddr, sizeof(sockaddr_in), hostbuf, sizeof(hostbuf), servbuf, 0, NI_NUMERICHOST)
+        if ret != 0:
+            err = WSAGetLastError()
+            closesocket(acceptSocket._socket)
+            raise WinError(err)
+
+        # host = inet_ntoa(localSockaddr.sin_addr)
+
+        return (acceptSocket, (hostbuf.value, port))
 
     def recv(self, byteCount, flags=0):
         if self.recvBuffer is None:
